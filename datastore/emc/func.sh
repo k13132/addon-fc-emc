@@ -103,7 +103,7 @@ function unassign_image_from_host {
 
   # 2. Unassign
   CMD="$NAVISECCLI storagegroup -removehlu -gname $SG -hlu $1 -o"
-  echo $CMD | sh
+  exec_and_log "$CMD" "Unable to unassign LUN $1 from $SG"
 }
 
 
@@ -167,22 +167,25 @@ function drop_block_device {
 
     if [ $MPATHFLUSHED -eq 0 ]; then
       DEV=$(lsscsi `echo "$ids $1" | sed -e 's/ /:/g'` | awk '{print $6}')
-      SCSIID=$(/lib/udev/scsi_id  --whitelisted --device=$DEV)
+      SCSIID=$(sudo /lib/udev/scsi_id  --whitelisted --device=$DEV)
+      log "Devices: $DEV $SCSIID"
       if [ ! -z $SCSIID ]; then
-        MPATHDEV=$(multipath -l  | grep $SCSIID | awk '{print $1}')
+        MPATHDEV=$(sudo multipath -l  | grep $SCSIID | awk '{print $1}')
+	log "finding device $DEV $SCSIID $MPATHDEV $GMPATHDEV"
         if [ -z $GMPATHDEV ] && [ ! -z $MPATHDEV ]; then
             GMPATHDEV=$MPATHDEV
         fi;
       fi;
       
       # Flush multipath device 
-      sudo multipath -f $MPATHDEV
+      log "Multipath flush: $MPATHDEV"
+      sudo multipath -f $MPATHDEV > /dev/null
       MPATHFLUSHED=1
     fi;
 
     # Drop block device from scsi subystem
     CMD="echo \"scsi remove-single-device $ids $1\" > /proc/scsi/scsi"
-    sudo bash -c "$CMD"
+    sudo bash -c "$CMD" > /dev/null
 
   done;
 }

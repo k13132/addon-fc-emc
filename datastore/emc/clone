@@ -75,7 +75,6 @@ log "A new LUN ID=$LUN_ID"
 
 # 1.2. Find about SPx LUN provisioning
 CMD="$NAVISECCLI getlun | awk -F: '/Default Owner/{A[\$2]++} END{B=100000; for(i in A){if(A[i]<B){C=i;B=A[i]}};print C}' | sed -e 's/ //g'"
-echo $CMD >> /tmp/cmd
 SP=`echo $CMD | sh`
 
 # Protection about removing current LUNs
@@ -85,7 +84,6 @@ fi
 
 # 1.3. bind new LUN
 CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
-echo $CMD >> /tmp/cmd
 exec_and_log "$CMD" "Error creating new LUN"
 
 
@@ -105,7 +103,8 @@ log "Source LUN $SOURCE_LUN connected as $SRC_DEV"
 # 2.3. DD from SRC to DEST
 CMD="$SUDO $DD if=$SRC_DEV of=$DEST_DEV bs=2M > /dev/null"
 log "Clonning images: $CMD "
-echo $CMD | sh
+echo "$CMD" | sh > /dev/null
+
 
 # 3. Unconnect all LUNs
 # 3.1. Unconnect Dest LUN from host
@@ -118,5 +117,5 @@ log "Unconnecting $SOURCE_LUN from $HOST"
 drop_block_device $SOURCE_LUN
 unassign_image_from_host $SOURCE_LUN `hostname`
 
-
+# Return new LUN id
 echo "$LUN_ID"
