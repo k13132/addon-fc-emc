@@ -1,0 +1,122 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2012, OpenNebula Project Leads (OpenNebula.org)             #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+###############################################################################
+# This script is used to copy a VM image (SRC) to the image repository as DST
+# Several SRC types are supported
+###############################################################################
+# -------- Set up the environment to source common tools & conf ------------
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../libfs.sh
+source ${DRIVER_PATH}/emc.conf
+source ${DRIVER_PATH}/func.sh
+
+# -------- Get cp and datastore arguments from OpenNebula core ------------
+
+DRV_ACTION=$1
+ID=$2
+
+XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
+
+unset i j XPATH_ELEMENTS
+ 
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/IMAGE/CLONING_ID \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/SIZE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_HOSTNAME \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_USER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_PASSWORD \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/BLOCK_SIZE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RAID_GROUP_ID \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RAID_GROUP_RAIDLEVEL )
+
+SOURCE_LUN="${XPATH_ELEMENTS[j++]}"
+SIZE="${XPATH_ELEMENTS[j++]}"
+CLI_HOSTNAME="${XPATH_ELEMENTS[j++]}"
+CLI_USER="${XPATH_ELEMENTS[j++]}"
+CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
+BLOCK_SIZE="${XPATH_ELEMENTS[j++]:-$BLOCK_SIZE}"
+RAID_GROUP_ID="${XPATH_ELEMENTS[j++]}"
+RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
+
+
+NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
+
+
+# 1. Create a new LUN
+# 1.1. Find empty LUN id
+CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=-1}{if( l+1 < \$1){exit} l=\$1 }END{print l+1}'"
+LUN_ID=`echo $CMD | sh`
+log "A new LUN ID=$LUN_ID"
+
+# 1.2. Find about SPx LUN provisioning
+CMD="$NAVISECCLI getlun | awk -F: '/Default Owner/{A[\$2]++} END{B=100000; for(i in A){if(A[i]<B){C=i;B=A[i]}};print C}' | sed -e 's/ //g'"
+echo $CMD >> /tmp/cmd
+SP=`echo $CMD | sh`
+
+# Protection about removing current LUNs
+if [ $LUN_ID -lt 2 ]; then
+   exit 1;
+fi
+
+# 1.3. bind new LUN
+CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
+echo $CMD >> /tmp/cmd
+exec_and_log "$CMD" "Error creating new LUN"
+
+
+# 2. Connect LUNs to host where clone will be performed
+# 2.1. Connect destination LUN
+assign_image_to_host $LUN_ID `hostname`
+sleep 1
+DEST_DEV=$(create_block_device $LUN_ID)
+log "Destination LUN $LUN_ID connected as $DEST_DEV"
+
+# 2.2. Connect source LUN
+assign_image_to_host $SOURCE_LUN `hostname`
+sleep 1
+SRC_DEV=$(create_block_device $SOURCE_LUN)
+log "Source LUN $SOURCE_LUN connected as $SRC_DEV"
+
+# 2.3. DD from SRC to DEST
+CMD="$SUDO $DD if=$SRC_DEV of=$DEST_DEV bs=2M > /dev/null"
+log "Clonning images: $CMD "
+echo $CMD | sh
+
+# 3. Unconnect all LUNs
+# 3.1. Unconnect Dest LUN from host
+log "Unconnecting $LUN_ID from $HOST"
+drop_block_device $LUN_ID
+unassign_image_from_host $LUN_ID `hostname`
+
+# 3.2. Unconnect Dest LUN from host
+log "Unconnecting $SOURCE_LUN from $HOST"
+drop_block_device $SOURCE_LUN
+unassign_image_from_host $SOURCE_LUN `hostname`
+
+
+echo "$LUN_ID"
