@@ -33,7 +33,8 @@ fi
 
 DRIVER_PATH=$(dirname $0)
 source ${DRIVER_PATH}/../libfs.sh
-source ${DRIVER_PATH}/lvm.conf
+source ${DRIVER_PATH}/emc.conf
+source ${DRIVER_PATH}/func.sh
 
 # -------- Get cp and datastore arguments from OpenNebula core ------------
 
@@ -42,17 +43,18 @@ ID=$2
 
 UTILS_PATH="${DRIVER_PATH}/.."
 
-XPATH="$UTILS_PATH/xpath.rb -b $DRV_ACTION"
+XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
 
 unset i j XPATH_ELEMENTS
 
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
-done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/BASE_PATH \
-                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RESTRICTED_DIRS \
-                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/SAFE_DIRS \
-                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/BRIDGE_LIST \
-                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/VG_NAME \
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_HOSTNAME \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_USER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_PASSWORD \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/BLOCK_SIZE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RAID_GROUP_ID \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RAID_GROUP_RAIDLEVEL \
                     /DS_DRIVER_ACTION_DATA/IMAGE/PATH \
                     /DS_DRIVER_ACTION_DATA/IMAGE/SIZE \
                     /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/MD5 \
@@ -60,11 +62,12 @@ done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/BASE_PATH \
                     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/NO_DECOMPRESS \
                     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/LIMIT_TRANSFER_BW)
 
-BASE_PATH="${XPATH_ELEMENTS[j++]}"
-RESTRICTED_DIRS="${XPATH_ELEMENTS[j++]}"
-SAFE_DIRS="${XPATH_ELEMENTS[j++]}"
-BRIDGE_LIST="${XPATH_ELEMENTS[j++]}"
-VG_NAME="${XPATH_ELEMENTS[j++]:-$VG_NAME}"
+CLI_HOSTNAME="${XPATH_ELEMENTS[j++]}"
+CLI_USER="${XPATH_ELEMENTS[j++]}"
+CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
+BLOCK_SIZE="${XPATH_ELEMENTS[j++]:-$BLOCK_SIZE}"
+RAID_GROUP_ID="${XPATH_ELEMENTS[j++]}"
+RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 SRC="${XPATH_ELEMENTS[j++]}"
 SIZE="${XPATH_ELEMENTS[j++]}"
 MD5="${XPATH_ELEMENTS[j++]}"
@@ -72,24 +75,35 @@ SHA1="${XPATH_ELEMENTS[j++]}"
 NO_DECOMPRESS="${XPATH_ELEMENTS[j++]}"
 LIMIT_TRANSFER_BW="${XPATH_ELEMENTS[j++]}"
 
-DST_HOST=`get_destination_host $ID`
 
-if [ -z "$DST_HOST" ]; then
-    error_message "Datastore template missing 'BRIDGE_LIST' attribute."
-    exit -1
+NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
+
+
+## Create a new LUN
+# 1. Find empty LUN id
+CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=-1}{if( l+1 < \$1){exit} l=\$1 }END{print l+1}'"
+LUN_ID=`echo $CMD | sh`
+log "A new LUN id is $LUN_ID"
+
+# 2. Find about SPx LUN provisioning
+CMD="$NAVISECCLI getlun | awk -F: '/Default Owner/{A[\$2]++} END{B=100000; for(i in A){if(A[i]<B){C=i;B=A[i]}};print C}' | sed -e 's/ //g'"
+SP=`echo $CMD | sh`
+
+# Protection about removing current LUNs
+if [ $LUN_ID -lt 2 ]; then
+   exit 1;
 fi
 
-set_up_datastore "$BASE_PATH" "$RESTRICTED_DIRS" "$SAFE_DIRS"
+# 3. bind new LUN
+CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
+exec_and_log "$CMD" "Error creating new LUN"
 
-LV_NAME="lv-one-${ID}"
-LVM_SOURCE="$DST_HOST:$VG_NAME.$LV_NAME"
-DEV="/dev/$VG_NAME/$LV_NAME"
+## Assign LUN to host
+assign_image_to_host $LUN_ID `hostname`
+DEV=$(create_block_device $LUN_ID)
 
-REGISTER_CMD=$(cat <<EOF
-    set -e
-    $SUDO $LVCREATE -L${SIZE}M ${VG_NAME} -n ${LV_NAME}
-EOF
-)
+
+## Download and copy image to block device DEV
 
 DOWNLOADER_ARGS=`set_downloader_args "$MD5" "$SHA1" "$NO_DECOMPRESS" "$LIMIT_TRANSFER_BW" "$SRC" -`
 
@@ -115,9 +129,13 @@ http://*|https://*)
     ;;
 esac
 
-ssh_exec_and_log "$DST_HOST" "$REGISTER_CMD" "Error registering $DST_HOST:$DEV"
-
-exec_and_log "eval $DUMP | $SSH $DST_HOST $SUDO $DD of=$DEV bs=64k" \
+exec_and_log "eval $DUMP | $SUDO $DD of=$DEV bs=64k" \
     "Error dumping $SRC to $DST_HOST:$DEV"
 
-echo "$LVM_SOURCE"
+## Unassign LUN from host
+log "Unconnecting $LUN_ID"
+drop_block_device $LUN_ID
+unassign_image_from_host $LUN_ID `hostname`
+
+## Return
+echo "$LUN_ID"
