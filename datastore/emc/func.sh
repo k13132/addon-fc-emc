@@ -1,6 +1,6 @@
 #!/bin/bash
 
-. $LIB_LOCATION/sh/scripts_common.sh
+. /var/lib/one/remotes/scripts_common.sh
 NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
 
 
@@ -111,6 +111,7 @@ function unassign_image_from_host {
 #  Function for creating block device based on LUN id which is already assigned 
 #  to host
 #    @param $1 - LUN id bysed on numbering in Navishere convences
+#    @param $2 - Destination path where to symlink device
 #    @return None
 #------------------------------------------------------------------------------
 function create_block_device {
@@ -147,6 +148,11 @@ function create_block_device {
 
   # Return multipath identifier
   echo $DEV
+
+  # Make symlink if $2 is defined
+  if [ $# -ge 2 ]; then
+    ln -sf $DEV $2
+  fi;
 }
 
 
