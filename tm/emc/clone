@@ -69,24 +69,72 @@ while IFS= read -r -d '' element; do
 done < <(onedatastore show -x $DSID| $XPATH \
                     /DATASTORE/TEMPLATE/CLI_HOSTNAME \
                     /DATASTORE/TEMPLATE/CLI_USER \
-                    /DATASTORE/TEMPLATE/CLI_PASSWORD)
+                    /DATASTORE/TEMPLATE/CLI_PASSWORD \
+                    /DATASTORE/TEMPLATE/BLOCK_SIZE \
+                    /DATASTORE/TEMPLATE/RAID_GROUP_ID \
+                    /DATASTORE/TEMPLATE/RAID_GROUP_RAIDLEVEL)
 
 CLI_HOSTNAME="${XPATH_ELEMENTS[j++]}"
 CLI_USER="${XPATH_ELEMENTS[j++]}"
 CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
-
-echo $CLI_HOSTNAME $CLI_USER $CLI_PASSWORD
+BLOCK_SIZE="${XPATH_ELEMENTS[j++]:-$BLOCK_SIZE}"
+RAID_GROUP_ID="${XPATH_ELEMENTS[j++]}"
+RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 
 . $DRIVER_PATH/../../datastore/emc/func.sh
 
+#-------------------------------------------------------------------------------
+# Get information about Image size and generate a new LUN ID
+#-------------------------------------------------------------------------------
 
-# 1. Check if SG exists
-# 1.1. Create SG
-# 1.2. Check if host exits
-# 1.2.1. Assign host to SG
+SIZE=$($NAVISECCLI getlun $SRC_PATH | awk -F: '/Megabytes/{print$2}')
 
-# 2. Assign LUN to SG
-# 3. Refresh SCSI
-# 4. Update multipath device
-# 5. Make link to system DS at remote host
+# 1. Find empty LUN id
+CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=-1}{if( l+1 < \$1){exit} l=\$1 }END{print l+1}'"
+LUN_ID=`echo $CMD | sh`
+#TODO: Max limit
 
+# 2. Find about SPx LUN provisioning
+CMD="$NAVISECCLI getlun | awk -F: '/Default Owner/{A[\$2]++} END{B=100000; for(i in A){if(A[i]<B){C=i;B=A[i]}};print C}' | sed -e 's/ //g'"
+SP=`echo $CMD | sh`
+
+# Protection against removing current LUNs
+if [ $LUN_ID -lt 2 ]; then
+   exit 1;
+fi
+
+CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
+log "Creating a temporary LUN: $CMD"
+exec_and_log "$CMD" "Error creating new LUN"
+
+#-------------------------------------------------------------------------------
+# Assign LUN to Host
+#-------------------------------------------------------------------------------
+
+assign_image_to_host $SRC_PATH $DST_HOST
+assign_image_to_host $LUN_ID $DST_HOST
+
+#-------------------------------------------------------------------------------
+# Refresh SCSI & Make link to system DS
+#-------------------------------------------------------------------------------
+
+CLONE_CMD=$(cat <<EOF
+    set -e
+    source /var/lib/one/remotes/datastore/emc/func.sh
+    create_block_device $SRC_PATH $DST_PATH.original
+    create_block_device $LUN_ID $DST_PATH
+    nice -n 19 dd if=$DST_PATH.original of=$DST_PATH bs=64k > /dev/null 2>&1 || echo "Error in DD"
+#    rm $DST_PATH.original
+#    drop_block_device $SRC_PATH
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$CLONE_CMD" \
+        "Error cloning $DST_HOST:LUN $SRC_PATH -> $LUN_ID"
+
+#-------------------------------------------------------------------------------
+# Unassign LUN from Host
+#-------------------------------------------------------------------------------
+#unassign_image_from_host $SRC_PATH $DST_HOST
+
+exit 0
