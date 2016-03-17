@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 
 # -------------------------------------------------------------------------- #
-# Copyright 2002-2015, OpenNebula Project (OpenNebula.org), C12G Labs        #
+# Copyright 2002-2015, OpenNebula Project, OpenNebula Systems                #
 #                                                                            #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may    #
 # not use this file except in compliance with the License. You may obtain    #
@@ -16,4 +16,129 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-exit 0
+# mv hostA:system_ds/disk.i|hostB:system_ds/disk.i vm_id ds_id
+#   - hostA is the host the VM is in.
+#   - hostB is the target host to deploy the VM
+#   - system_ds is the path for the system datastore in the host
+#   - vm_id is the id of the VM
+#   - ds_id is the target datastore (the system datastore)
+
+
+#echo "`date` $@" >> /tmp/tmp
+SRC=$1
+DST=$2
+VM_ID=$3
+DS_ID=$4
+
+if [ "$SRC" == "$DST" ]; then
+    log "Not moving $SRC to $DST, they are the same path"
+        exit 0
+fi
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+DRIVER_PATH=$(dirname $0)
+
+# Libraries location
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+#-------------------------------------------------------------------------------
+# Set dst path and dir
+#-------------------------------------------------------------------------------
+
+SRC_PATH=`arg_path $SRC`
+SRC_HOST=`arg_host $SRC`
+SRC_DIR=`dirname $SRC_PATH`
+
+DST_PATH=`arg_path $DST`
+DST_HOST=`arg_host $DST`
+DST_DIR=`dirname $DST_PATH`
+
+# Prepare directory structure at DST node
+ssh_make_path $DST_HOST $DST_DIR
+
+#-------------------------------------------------------------------------------
+# Work with images
+#
+# Get Datastore information for communication with EMC controller
+#-------------------------------------------------------------------------------
+
+DISK_ID=$(basename ${DST_PATH} | cut -d. -f2)
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i j XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $DS_ID| $XPATH \
+                    /DATASTORE/TEMPLATE/CLI_HOSTNAME \
+                    /DATASTORE/TEMPLATE/CLI_USER \
+                    /DATASTORE/TEMPLATE/CLI_PASSWORD)
+
+CLI_HOSTNAME="${XPATH_ELEMENTS[j++]}"
+CLI_USER="${XPATH_ELEMENTS[j++]}"
+CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
+
+. $DRIVER_PATH/../../datastore/emc/func.sh
+
+#-------------------------------------------------------------------------------
+# Get information about image
+#-------------------------------------------------------------------------------
+
+DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VM_ID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/CLONE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
+
+LUN="${XPATH_ELEMENTS[j++]}"
+CLONE="${XPATH_ELEMENTS[j++]}"
+PERSISTENT="${XPATH_ELEMENTS[j++]}"
+
+#-------------------------------------------------------------------------------
+# Connect LUN to DST host 
+#-------------------------------------------------------------------------------
+
+log "Assign LUN to host"
+assign_image_to_host $LUN $DST_HOST
+sleep 5
+
+log "Erase source disk"
+ssh_exec_and_log "$SRC_HOST" "rm -rf $SRC_PATH" \
+        "Could not remove $SRC_HOST:$SRC_PATH"
+
+if (`$SSH $SRC_HOST [ -d $SRC_DIR ]`); then
+  log "Sync folders"
+  RSYNC="$SSH $DST_HOST 'rsync -a $SRC_HOST:$SRC_DIR/* $DST_DIR/'"
+  exec_and_log "eval $RSYNC" "Error copying disk directory to target host"
+  ssh_exec_and_log "$SRC_HOST" "rm -rf $SRC_DIR" "Error erasing $SRC_DIR"
+fi;
+
+log "Unconnect SCSI device from host"
+CREATEDEV_CMD=$(cat <<EOF
+    set -e
+    source /var/lib/one/remotes/datastore/emc/func.sh
+    create_block_device $LUN $DST_PATH
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$CREATEDEV_CMD" \
+        "Error assing $LUN on $DST_HOST"
+
+unassign_image_from_host $LUN $SRC_HOST
+
+
