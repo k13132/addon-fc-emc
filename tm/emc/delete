@@ -16,7 +16,7 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-# clone fe:SOURCE host:remote_system_ds/disk.i vmid dsid
+# delete fe:SOURCE host:remote_system_ds/disk.i vmid dsid
 #   - fe is the front-end hostname
 #   - SOURCE is the path of the disk image in the form DS_BASE_PATH/disk
 #   - host is the target host to deploy the VM
@@ -24,11 +24,8 @@
 #   - vmid is the id of the VM
 #   - dsid is the target datastore (0 is the system datastore)
 
-SRC=$1
-DST=$2
 
-VMID=$3
-DSID=$4
+DST=$1
 
 if [ -z "${ONE_LOCATION}" ]; then
     TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
@@ -52,16 +49,26 @@ fi
 # Set dst path and dir
 #-------------------------------------------------------------------------------
 
-SRC_PATH=`arg_path $SRC`
 DST_PATH=`arg_path $DST`
-
 DST_HOST=`arg_host $DST`
 DST_DIR=`dirname $DST_PATH`
-
-
-ssh_make_path $DST_HOST $DST_DIR
+VM_ID=$2
+DS_ID=$3
 
 #-------------------------------------------------------------------------------
+# Delete and exit if directory
+#-------------------------------------------------------------------------------
+
+if [ `is_disk $DST_PATH` -eq 0 ]; then
+    # Directory
+    log "Deleting $DST_PATH"
+    ssh_exec_and_log "$DST_HOST" "rm -rf $DST_PATH" "Error deleting $DST_PATH"
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Work with images 
+#
 # Get Datastore information for communication with EMC controller
 #-------------------------------------------------------------------------------
 
@@ -73,7 +80,7 @@ unset i j XPATH_ELEMENTS
 
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
-done < <(onedatastore show -x $DSID| $XPATH \
+done < <(onedatastore show -x $DS_ID| $XPATH \
                     /DATASTORE/TEMPLATE/CLI_HOSTNAME \
                     /DATASTORE/TEMPLATE/CLI_USER \
                     /DATASTORE/TEMPLATE/CLI_PASSWORD)
@@ -82,18 +89,49 @@ CLI_HOSTNAME="${XPATH_ELEMENTS[j++]}"
 CLI_USER="${XPATH_ELEMENTS[j++]}"
 CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
 
-echo $CLI_HOSTNAME $CLI_USER $CLI_PASSWORD
-
 . $DRIVER_PATH/../../datastore/emc/func.sh
 
+#-------------------------------------------------------------------------------
+# Get information about image
+#-------------------------------------------------------------------------------
 
-# 1. Check if SG exists
-# 1.1. Create SG
-# 1.2. Check if host exits
-# 1.2.1. Assign host to SG
+DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
 
-# 2. Assign LUN to SG
-# 3. Refresh SCSI
-# 4. Update multipath device
-# 5. Make link to system DS at remote host
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VM_ID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/CLONE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
 
+SRC="${XPATH_ELEMENTS[j++]}"
+CLONE="${XPATH_ELEMENTS[j++]}"
+PERSISTENT="${XPATH_ELEMENTS[j++]}"
+
+
+# Unconnect SCSI device from host
+DROPDEV_CMD=$(cat <<EOF
+    set -e
+    source /var/lib/one/remotes/datastore/emc/func.sh
+    rm -f $DST_PATH
+    drop_block_device $SRC
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$DROPDEV_CMD" \
+        "Error dropping device $SRC on $DST_HOST"
+
+
+# Unassign LUN from storage group
+unassign_image_from_host $SRC $DST_HOST
+
+
+# REMOVE LUN if not persistent
+if [ $PERSISTENT == "NO" ]; then
+   # TODO: Must be tested 
+   CMD="$NAVISECCLI unbind -o $SRC"
+   echo $CMD
+fi;
+
+
+exit 0
