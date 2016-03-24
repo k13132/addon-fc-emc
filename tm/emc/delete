@@ -97,23 +97,46 @@ CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
 
 DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
 
+unset i j XPATH_ELEMENTS
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <(onevm show -x $VM_ID| $XPATH \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/CLONE \
-                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
-
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/IMAGE_ID)
 SRC="${XPATH_ELEMENTS[j++]}"
 CLONE="${XPATH_ELEMENTS[j++]}"
+IMAGE_ID="${XPATH_ELEMENTS[j++]}"
+
+unset i j XPATH_ELEMENTS
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(oneimage show -x $IMAGE_ID| $XPATH \
+                    /IMAGE/PERSISTENT)
 PERSISTENT="${XPATH_ELEMENTS[j++]}"
 
+
+# Obtain LUN id for non-persistent image
+if [ "$PERSISTENT" -eq 0 ]; then
+  SSH_CMD='sudo multipath -ll $(readlink '$DST_PATH")"
+  SRC=`$SSH $DST_HOST "$SSH_CMD" | tail -n1 | awk '{print $2}' | awk -F: '{print $4}'`
+  log "Non-persistent image LUN ID=$SRC"
+fi;
 
 # Unconnect SCSI device from host
 DROPDEV_CMD=$(cat <<EOF
     set -e
     source /var/lib/one/remotes/datastore/emc/func.sh
     rm -f $DST_PATH
+EOF
+)
+
+ssh_exec_and_log "$DST_HOST" "$DROPDEV_CMD" \
+        "Error removing link $DST_PATH on $DST_HOST"
+
+DROPDEV_CMD=$(cat <<EOF
+    set -e
+    source /var/lib/one/remotes/datastore/emc/func.sh
     drop_block_device $SRC
 EOF
 )
@@ -121,17 +144,14 @@ EOF
 ssh_exec_and_log "$DST_HOST" "$DROPDEV_CMD" \
         "Error dropping device $SRC on $DST_HOST"
 
-
 # Unassign LUN from storage group
 unassign_image_from_host $SRC $DST_HOST
-
+sleep 5
 
 # REMOVE LUN if not persistent
-if [ $PERSISTENT == "NO" ]; then
-   # TODO: Must be tested 
+if [ "$PERSISTENT" -eq 0 ]; then
    CMD="$NAVISECCLI unbind -o $SRC"
-   echo $CMD
+   exec_and_log "$CMD"
 fi;
-
 
 exit 0

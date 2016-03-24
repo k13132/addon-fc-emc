@@ -66,6 +66,9 @@ RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 
 NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
 
+# Semaphor - LOCK
+semaphor_on
+echo $ID >> $LOCK
 
 # 1. Create a new LUN
 # 1.1. Find empty LUN id
@@ -85,6 +88,9 @@ fi
 # 1.3. bind new LUN
 CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
 exec_and_log "$CMD" "Error creating new LUN"
+
+# Semaphor - UNLOCK
+semaphor_off $LUN_ID
 
 
 # 2. Connect LUNs to host where clone will be performed

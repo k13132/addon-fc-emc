@@ -16,4 +16,6 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-exit 0
+echo pre > /tmp/tmp
+
+exit 1

@@ -89,6 +89,10 @@ RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 
 SIZE=$($NAVISECCLI getlun $SRC_PATH | awk -F: '/Megabytes/{print$2}')
 
+# Semaphor - LOCK
+semaphor_on
+echo $VMID >> $LOCK
+
 # 1. Find empty LUN id
 CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=-1}{if( l+1 < \$1){exit} l=\$1 }END{print l+1}'"
 LUN_ID=`echo $CMD | sh`
@@ -107,6 +111,9 @@ CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -c
 log "Creating a temporary LUN: $CMD"
 exec_and_log "$CMD" "Error creating new LUN"
 
+# Semaphor - UNLOCK
+semaphor_off $LUN_ID
+
 #-------------------------------------------------------------------------------
 # Assign LUN to Host
 #-------------------------------------------------------------------------------
@@ -123,9 +130,9 @@ CLONE_CMD=$(cat <<EOF
     source /var/lib/one/remotes/datastore/emc/func.sh
     create_block_device $SRC_PATH $DST_PATH.original
     create_block_device $LUN_ID $DST_PATH
-    nice -n 19 dd if=$DST_PATH.original of=$DST_PATH bs=64k > /dev/null 2>&1 || echo "Error in DD"
-#    rm $DST_PATH.original
-#    drop_block_device $SRC_PATH
+    nice -n 19 dd if=$DST_PATH.original of=$DST_PATH bs=10M > /dev/null 2>&1 || echo "Error in DD"
+    rm $DST_PATH.original
+    drop_block_device $SRC_PATH
 EOF
 )
 
@@ -135,6 +142,8 @@ ssh_exec_and_log "$DST_HOST" "$CLONE_CMD" \
 #-------------------------------------------------------------------------------
 # Unassign LUN from Host
 #-------------------------------------------------------------------------------
-#unassign_image_from_host $SRC_PATH $DST_HOST
+# TODO: this can be problem for cases when there is a number of deployments
+# at the same time a the same machine. 
+unassign_image_from_host $SRC_PATH $DST_HOST
 
 exit 0

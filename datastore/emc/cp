@@ -78,6 +78,9 @@ LIMIT_TRANSFER_BW="${XPATH_ELEMENTS[j++]}"
 
 NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
 
+# Semaphor - LOCK
+semaphor_on
+echo $ID >> $LOCK
 
 ## Create a new LUN
 # 1. Find empty LUN id
@@ -97,6 +100,9 @@ fi
 # 3. bind new LUN
 CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
 exec_and_log "$CMD" "Error creating new LUN"
+
+# Semaphor - UNLOCK
+semaphor_off $LUN_ID
 
 ## Assign LUN to host
 assign_image_to_host $LUN_ID `hostname`
@@ -129,7 +135,7 @@ http://*|https://*)
     ;;
 esac
 
-exec_and_log "eval $DUMP | $SUDO $DD of=$DEV bs=64k" \
+exec_and_log "eval $DUMP | $SUDO $DD of=$DEV bs=1M" \
     "Error dumping $SRC to $DST_HOST:$DEV"
 
 ## Unassign LUN from host

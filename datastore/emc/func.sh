@@ -2,7 +2,9 @@
 
 . /var/lib/one/remotes/scripts_common.sh
 NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
-
+LOCK=/var/tmp/one/datastore/emc/lock
+SLEEP=3
+TIMEOUT=90
 
 #------------------------------------------------------------------------------
 #  Creates uniform Storage Group name based on host name
@@ -185,7 +187,7 @@ function drop_block_device {
       
       # Flush multipath device 
       log "Multipath flush: $MPATHDEV"
-      sudo multipath -f $MPATHDEV > /dev/null
+      sudo multipath -f $MPATHDEV -v0 
       MPATHFLUSHED=1
     fi;
 
@@ -197,6 +199,44 @@ function drop_block_device {
 }
 
 
+#------------------------------------------------------------------------------
+#  Function creating an exclusive are 
+#    @return None
+#------------------------------------------------------------------------------
+function semaphor_on {
+	w=0
+	while [ -e $LOCK ]; do
+	 sleep $SLEEP;
+	 log "Waiting $w/${TIMEOUT}s till $LOCK is released";
+	 w=$((w+$SLEEP));
+	 if [ $w -gt $TIMEOUT ]; then
+	    exit 1;
+	 fi;
+	done
+	touch $LOCK
+}
+
+
+#------------------------------------------------------------------------------
+#  Function creating an exclusive are
+#    @return None
+#------------------------------------------------------------------------------
+function semaphor_off {
+	w=0
+	while true; do
+	  $NAVISECCLI getlun $LUN_ID | grep "Invalid LUN number"
+	  if [ $? -eq 1  ]; then
+	    break;
+	  fi;
+	  log "Waiting $w/${TIMEOUT}s till $1 is created";
+	  w=$((w+$SLEEP));
+	  if [ $w -gt $TIMEOUT ]; then
+	    exit 1;
+	  fi;
+	  sleep $SLEEP;
+	done;
+	rm $LOCK
+}
 
 #assign_image_to_host 4 `hostname`
 #create_block_device 4

@@ -59,24 +59,12 @@ RAID_GROUP_ID="${XPATH_ELEMENTS[j++]}"
 RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 FSTYPE="${XPATH_ELEMENTS[j++]}"
 SIZE="${XPATH_ELEMENTS[j++]:-0}"
-LOCK=/var/tmp/one/datastore/emc/lock
-SLEEP=3
-TIMEOUT=90
 
 NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
 
 # Semaphor - LOCK 
-w=0
-while [ -e $LOCK ]; do
- sleep $SLEEP;
- log "Waiting $w/${TIMEOUT}s till $LOCK is released";
- w=$((w+$SLEEP));
- if [ $w -gt $TIMEOUT ]; then
-    exit 1;
- fi;
-done
+semaphor_on
 echo $ID >> $LOCK
-
 
 # 1. Find empty LUN id
 CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=-1}{if( l+1 < \$1){exit} l=\$1 }END{print l+1}'"
@@ -103,25 +91,9 @@ exec_and_log "$CMD" "Error creating new LUN"
 log "Requested space allocated as $LUN_ID"
 echo $LUN_ID
 
-
 # Semaphor - UNLOCK
-w=0
-while true; do 
-  $NAVISECCLI getlun $LUN_ID | grep "Invalid LUN number"
-  if [ $? -eq 1  ]; then
-    break;
-  fi;
-  log "Waiting $w/${TIMEOUT}s till $LUN_ID is created";
-  w=$((w+$SLEEP));
-  if [ $w -gt $TIMEOUT ]; then
-    exit 1;
-  fi;
-  sleep $SLEEP;  
-done;
-rm $LOCK
+semaphor_off $LUN_ID
 
-
-exit 0
 
 # 4. Format disk to specified format
 
@@ -131,7 +103,7 @@ if [ "$FSTYPE" = "save_as" ]; then
     exit 0
 fi
 
-
+exit 0
 # ------------ Create the image to the repository ------------
 
 
