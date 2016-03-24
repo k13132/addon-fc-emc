@@ -128,7 +128,8 @@ if (`$SSH $SRC_HOST [ -d $SRC_DIR ]`); then
   ssh_exec_and_log "$SRC_HOST" "rm -rf $SRC_DIR" "Error erasing $SRC_DIR"
 fi;
 
-log "Unconnect SCSI device from host"
+# Connection to DST host
+log "Connect SCSI device to host"
 CREATEDEV_CMD=$(cat <<EOF
     set -e
     source /var/lib/one/remotes/datastore/emc/func.sh
@@ -138,6 +139,19 @@ EOF
 
 ssh_exec_and_log "$DST_HOST" "$CREATEDEV_CMD" \
         "Error assing $LUN on $DST_HOST"
+
+
+# Unconnecting from SRC host
+log "Unconnect SCSI device from host"
+DROPDEV_CMD=$(cat <<EOF
+    set -e
+    source /var/lib/one/remotes/datastore/emc/func.sh
+    drop_block_device $LUN
+EOF
+)
+
+ssh_exec_and_log "$SRC_HOST" "$DROPDEV_CMD" \
+        "Error unassing $LUN on $SRC_HOST"
 
 unassign_image_from_host $LUN $SRC_HOST
 
