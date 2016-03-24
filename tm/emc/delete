@@ -154,4 +154,4 @@ if [ "$PERSISTENT" -eq 0 ]; then
    exec_and_log "$CMD"
 fi;
 
-exit 0
+exit 1
