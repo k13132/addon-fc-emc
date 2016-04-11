@@ -72,7 +72,7 @@ echo $ID >> $LOCK
 
 # 1. Create a new LUN
 # 1.1. Find empty LUN id
-CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=-1}{if( l+1 < \$1){exit} l=\$1 }END{print l+1}'"
+CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=10}{if(\$1 > 10){if( l+1 < \$1){exit} l=\$1} }END{print l+1}'"
 LUN_ID=`echo $CMD | sh`
 log "A new LUN ID=$LUN_ID"
 
