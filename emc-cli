@@ -1,0 +1,340 @@
+#!/bin/bash
+
+
+show_help() {
+cat << EOF
+Usage: ${0##*/} [-h] [-d DATASTOREID] [-l [-g] [-l] [-a]] [-c SIZE] [-m -s=HOST -l=ALU -d=HLU] [-r=LUNID]
+Manage EMC Clariion through its CLI interface based on information from OpenNebula
+ 
+   -d=          datastore ID which is managed
+   -l          activates listing options
+     -g        shows the list of available StorageGroups
+     -l        shows list of available LUNs
+     -a        shows which StorageGroups are LUNs attached to
+   -c          create a new LUN specified by its size in MB
+   -r          removes LUN
+   -m          connects LUN to StorageGroup
+     -h        Host
+     -alu      source LUN id
+     -hlu      destination LUN id
+   -u          umount 
+     -h        Host
+     -hlu      destination LUN id
+EOF
+}
+
+DSID=0
+LIST=0
+CREATE=0
+MOUNT=0
+UMOUNT=0
+REMOVE=0
+SIZE=0
+LIST_GROUP=0
+LIST_LUN=0
+LIST_ATT=0
+MOUNT_HOST="NONE"
+MOUNT_LUN="NONE"
+MOUNT_HBA="NONE"
+LUNID=-1
+
+
+for i in "$@"; do
+    
+    case $i in
+        
+        -d=*)
+        DSID="${i#*=}"
+        shift # past argument=value
+        ;;
+        
+        -l)
+        LIST=1
+        shift
+        # Parse optional parameters
+        for j in "$@"; do
+            case $j in
+                
+                -c=)
+                break
+                ;;
+                
+                -m)
+                break
+                ;;
+                
+                -g)
+                LIST_GROUP=1
+                shift
+                ;;
+                -l)
+                LIST_LUN=1
+                shift
+                ;;
+                -a)
+                LIST_ATT=1
+                shift
+                ;;
+                *)
+                shift
+                ;;
+            esac
+        done
+        ;;
+        
+        -c=*)
+        CREATE=1
+        SIZE="${i#*=}"
+        shift
+        ;;
+
+        -r=*)
+        REMOVE=1
+        LUNID="${i#*=}"
+        shift
+        ;;
+        
+        -m)
+        MOUNT=1
+        shift
+        # Parse optional parameters
+        for j in "$@"; do
+            case $j in
+                
+                -c=)
+                break
+                ;;
+                -m)
+                break
+                ;;
+    
+                -h=*)
+                MOUNT_HOST="${j#*=}"
+                shift
+                ;;
+                -alu=*)
+                MOUNT_LUN="${j#*=}"
+                shift
+                ;;
+                -hlu=*)
+                MOUNT_HBA="${j#*=}"
+                shift
+                ;;
+                *)
+                shift
+                ;;
+            esac
+        done
+        ;;
+        
+        -u)
+        UMOUNT=1
+        shift
+        # Parse optional parameters
+        for j in "$@"; do
+            case $j in
+                
+                -c=)
+                break
+                ;;
+                -m)
+                break
+                ;;
+    
+                -h=*)
+                MOUNT_HOST="${j#*=}"
+                shift
+                ;;
+                -hlu=*)
+                MOUNT_HBA="${j#*=}"
+                shift
+                ;;
+                *)
+                shift
+                ;;
+            esac
+        done
+        ;;
+        
+        -h)
+        show_help	
+        ;;
+    esac
+done
+
+
+if [ ! $((LIST+CREATE+MOUNT+REMOVE+UMOUNT)) -eq 1 ]; then
+    echo "You can do only one operation at the time!!!"
+    show_help
+    exit 1
+fi
+
+if [ $DSID -le 0 ]; then
+    echo "Datastore ID must be a number higher than 0"
+    exit 1  
+fi
+
+
+# Load DATASTORE configuration
+XPATH=/var/lib/one/remotes/datastore/xpath.rb
+unset i j XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/CLI_HOSTNAME \
+                    /DATASTORE/TEMPLATE/CLI_USER \
+                    /DATASTORE/TEMPLATE/CLI_PASSWORD \
+                    /DATASTORE/TEMPLATE/BLOCK_SIZE \
+                    /DATASTORE/TEMPLATE/RAID_GROUP_ID \
+                    /DATASTORE/TEMPLATE/RAID_GROUP_RAIDLEVEL)
+
+CLI_HOSTNAME="${XPATH_ELEMENTS[j++]}"
+CLI_USER="${XPATH_ELEMENTS[j++]}"
+CLI_PASSWORD="${XPATH_ELEMENTS[j++]}"
+BLOCK_SIZE="${XPATH_ELEMENTS[j++]:-$BLOCK_SIZE}"
+RAID_GROUP_ID="${XPATH_ELEMENTS[j++]}"
+RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
+
+source /var/lib/one/remotes/datastore/emc/func.sh
+
+#### LISTING
+if [ $LIST -eq 1 ]; then
+    
+    if [ $LIST_GROUP -eq 1 ]; then
+        $NAVISECCLI storagegroup -list | grep  "Storage Group Name"  | awk -F: '{print $2}'
+    fi;
+
+    if [ $LIST_LUN -eq 1 ] || [ $((LIST_GROUP+LIST_LUN+LIST_ATT)) -eq 0 ] ; then
+        $NAVISECCLI getlun | grep -E 'LUN|UID' | awk 'BEGIN{LUNID=0}{
+            if($1=="Name"){LUNID=$3;LUNS[$3]=$3;}
+            if($1=="UID:"){UID[LUNID]=$2}
+            if($2=="Capacity(Megabytes):"){CAP[LUNID]=$3}
+        }END{
+            n=asort(LUNS,a)
+            for(i = 1; i <= n; i++){
+              print "LUN "a[i]": "UID[a[i]]" has size "CAP[a[i]]"MB"
+            }
+        }'
+    fi;
+    
+    if [ $LIST_ATT -eq 1 ]; then
+        echo "HLU - LUN ID seen at destination host"
+        echo "ALU - LUN ID seen at storage controller"
+        for i in $($NAVISECCLI storagegroup -list | grep  "Storage Group Name"  | awk -F: '{print $2}'); do
+            echo $i
+            $NAVISECCLI storagegroup -list -gname $i | awk 'BEGIN{p=0}{
+                if($1=="HLU"){p=1}
+                if($1=="Shareable:"){p=0}
+                if(p){
+                  print $0
+                }
+            }'
+            echo 
+        done;
+    fi;
+
+fi;
+
+
+#### LUN creating
+if [ $CREATE -eq 1 ]; then
+    
+    semaphor_on
+    echo $ID >> $LOCK
+
+    # 1. Find empty LUN id
+    CMD="$NAVISECCLI getlun | awk '/^Name/{print \$3}' | sort -n | awk 'BEGIN{l=10}{if(\$1 > 10){if( l+1 < \$1){exit} l=\$1} }END{print l+1}'"
+    LUN_ID=`echo $CMD | sh`
+    #TODO: Max limit
+
+    # 2. Find about SPx LUN provisioning
+    CMD="$NAVISECCLI getlun | awk -F: '/Default Owner/{A[\$2]++} END{B=100000; for(i in A){if(A[i]<B){C=i;B=A[i]}};print C}' | sed -e 's/ //g'"
+    SP=`echo $CMD | sh`
+
+    # Protection about removing current LUNs
+    if [ $LUN_ID -lt 2 ]; then
+       exit 1;
+    fi
+
+    # 3. bind new LUN
+    CMD="$NAVISECCLI bind $RAID_GROUP_RAIDLEVEL $LUN_ID -rg $RAID_GROUP_ID -sq mb -cap $SIZE -sp ${SP: -1}"
+    echo $CMD | sh
+
+    # Semaphor - UNLOCK
+    semaphor_off $LUN_ID
+    
+    echo "New LUN ID is $LUN_ID"
+fi;
+
+
+#### LUN removing
+if [ $REMOVE -eq 1 ]; then
+    
+    # Disconnect from Storage groups
+    for i in $($NAVISECCLI storagegroup -list | grep  "Storage Group Name"  | awk -F: '{print $2}'); do
+        USED=$($NAVISECCLI storagegroup -list -gname $i | awk -v S=$LUNID 'BEGIN{p=0}{ 
+            if($1=="Shareable:"){p=0}
+            if(p){
+              if($2-S == 0){print "OK"}
+            }
+            if($1=="----------"){p=1}
+        }')
+        
+        if [ ! $USED == "" ]; then
+            echo "TODO removehlu from $i"
+        fi;
+    done;
+    
+    # Remove LUN
+    $NAVISECCLI unbind $LUNID
+fi;
+    
+    
+#### Mounting
+if [ $MOUNT -eq 1 ]; then
+    
+    if [ $MOUNT_HOST == "NONE" ] || [ $MOUNT_LUN == "NONE" ] || [ $MOUNT_HBA == "NONE" ]; then
+        echo "All parameters must be set"
+        exit 1
+    fi;
+    
+    # Assign to host
+    SG="ONE_$MOUNT_HOST"
+    $NAVISECCLI storagegroup -addhlu -gname $SG -hlu $MOUNT_HBA -alu $MOUNT_LUN
+    
+    # Discover on the host
+    DISCOVER_CMD=$(cat <<EOF
+        set -e
+        source /var/lib/one/remotes/datastore/emc/func.sh
+        create_block_device $MOUNT_HBA
+        echo $GMPATHDEV
+EOF
+)
+    
+    ssh_exec_and_log "$MOUNT_HOST" "$DISCOVER_CMD" \
+        "Error registering $MOUNT_HOST:$MOUNT_HBA $MOUNT_LUN"
+fi;
+
+
+if [ $UMOUNT -eq 1 ]; then
+    if [ $MOUNT_HOST == "NONE" ] || [ $MOUNT_HBA == "NONE" ]; then
+        echo "All parameters must be set"
+        exit 1
+    fi;
+    
+    DROPDEV_CMD=$(cat <<EOF
+        set -e
+        source /var/lib/one/remotes/datastore/emc/func.sh
+        drop_block_device $MOUNT_HBA
+EOF
+)
+
+    ssh_exec_and_log "$MOUNT_HOST" "$DROPDEV_CMD" \
+            "Error dropping device $MOUNT_HBA on $MOUNT_HOST"
+
+    # Unassign LUN from storage group
+    unassign_image_from_host $MOUNT_HBA $MOUNT_HOST
+    
+fi;
+
