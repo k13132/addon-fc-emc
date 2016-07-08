@@ -32,7 +32,6 @@ fi
 DRIVER_PATH=$(dirname $0)
 source ${DRIVER_PATH}/../libfs.sh
 source ${DRIVER_PATH}/emc.conf
-source ${DRIVER_PATH}/func.sh
 
 # -------- Get cp and datastore arguments from OpenNebula core ------------
 
@@ -42,10 +41,10 @@ ID=$2
 XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
 
 unset i j XPATH_ELEMENTS
- 
+
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
-done < <($XPATH     /DS_DRIVER_ACTION_DATA/IMAGE/CLONING_ID \
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/IMAGE/PATH \
                     /DS_DRIVER_ACTION_DATA/IMAGE/SIZE \
                     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_HOSTNAME \
                     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/CLI_USER \
@@ -63,8 +62,7 @@ BLOCK_SIZE="${XPATH_ELEMENTS[j++]:-$BLOCK_SIZE}"
 RAID_GROUP_ID="${XPATH_ELEMENTS[j++]}"
 RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 
-
-NAVISECCLI="/opt/Navisphere/bin/naviseccli -User $CLI_USER -Password $CLI_PASSWORD -Address $CLI_HOSTNAME -Scope 0 "
+source ${DRIVER_PATH}/func.sh
 
 # Semaphor - LOCK
 semaphor_on
