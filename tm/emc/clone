@@ -87,7 +87,14 @@ RAID_GROUP_RAIDLEVEL="${XPATH_ELEMENTS[j++]}"
 # Get information about Image size and generate a new LUN ID
 #-------------------------------------------------------------------------------
 
-SIZE=$($NAVISECCLI getlun $SRC_PATH | awk -F: '/Megabytes/{print$2}')
+while IFS= read -r -d '' element; do
+        XPATH_ELEMENTS[i++]="$element"
+        done < <(onevm show -x $VMID| $XPATH  \
+                            /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SIZE \
+                            /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/ORIGINAL_SIZE)
+
+SIZE="${XPATH_ELEMENTS[j++]}"
+ORIGINAL_SIZE="${XPATH_ELEMENTS[j++]}"
 
 # Semaphor - LOCK
 semaphor_on
