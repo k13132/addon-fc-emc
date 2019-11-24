@@ -103,7 +103,6 @@ if [ "$FSTYPE" = "save_as" ]; then
     exit 0
 fi
 
-exit 0
 # ------------ Create the image to the repository ------------
 
 
@@ -113,7 +112,7 @@ assign_image_to_host $LUN_ID `hostname`
 DEV=$(create_block_device $LUN_ID)
 
 # Format
-MKFS_CMD="$SUDO $(mkfs_command $DEV $FSTYPE)"
+MKFS_CMD="$SUDO $(mkfs_command $DEV $FSTYPE $SIZE)"
 
 exec_and_log "$MKFS_CMD" \
     "Error make $FSTYPE filesystem on $DEV"
@@ -124,4 +123,5 @@ drop_block_device $LUN_ID
 unassign_image_from_host $LUN_ID `hostname`
 
 
+exit 0
 
